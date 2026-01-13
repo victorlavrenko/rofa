@@ -1,0 +1,293 @@
+\documentclass[11pt]{article}
+
+% Fonts / encodings (pdfLaTeX)
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+
+% Mathematics
+\usepackage{amsmath,amssymb}
+
+% Modern Times-like text + matching math
+\usepackage{newtxtext}
+\usepackage{newtxmath}
+
+% Typography
+\usepackage{microtype}
+\usepackage{parskip}
+
+
+% Figures / tables
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{float}
+
+% Page layout
+\usepackage[a4paper,margin=1in]{geometry}
+
+% Captions
+\usepackage[font=small,labelfont=bf]{caption}
+
+% Bibliography
+\usepackage{csquotes}
+\usepackage[
+  backend=biber,
+  style=authoryear,
+  labeldate=year,
+  maxcitenames=2,  
+  maxbibnames=99,
+  doi=true,
+  url=true,
+  eprint=true,
+  hyperref=true
+]{biblatex}
+\setlength{\bibitemsep}{0.6\baselineskip}
+\addbibresource{../references.bib}
+\usepackage[hidelinks]{hyperref}
+\setcounter{biburllcpenalty}{7000}
+\setcounter{biburlucpenalty}{8000}
+
+
+% ----------------------------
+% Full clickable author–year citations (name + year), biblatex authoryear
+\DeclareFieldFormat{citehyperref}{%
+  \DeclareFieldAlias{bibhyperref}{noformat}% avoid nested links
+  \bibhyperref{#1}%
+}
+
+\DeclareFieldFormat{textcitehyperref}{%
+  \DeclareFieldAlias{bibhyperref}{noformat}% avoid nested links
+  \bibhyperref{%
+    #1%
+    \ifbool{cbx:parens}
+      {\bibcloseparen\global\boolfalse{cbx:parens}}
+      {}%
+  }%
+}
+
+\savebibmacro{cite}
+\savebibmacro{textcite}
+
+\renewbibmacro*{cite}{%
+  \printtext[citehyperref]{%
+    \restorebibmacro{cite}%
+    \usebibmacro{cite}%
+  }%
+}
+
+\renewbibmacro*{textcite}{%
+  \ifboolexpr{
+    (not test {\iffieldundef{prenote}} and
+      test {\ifnumequal{\value{citecount}}{1}})
+    or
+    (not test {\iffieldundef{postnote}} and
+      test {\ifnumequal{\value{citecount}}{\value{citetotal}}})
+  }
+    {\DeclareFieldAlias{textcitehyperref}{noformat}}
+    {}%
+  \printtext[textcitehyperref]{%
+    \restorebibmacro{textcite}%
+    \usebibmacro{textcite}%
+  }%
+}
+
+% -----------------------------------------
+% Priority: arXiv (eprint) > DOI > URL
+% -----------------------------------------
+\renewbibmacro*{doi+eprint+url}{%
+  \iffieldundef{eprint}
+    {%
+      \iffieldundef{doi}
+        {%
+          \iffieldundef{url}
+            {}
+            {\printfield{url}}%
+        }
+        {\printfield{doi}}%
+    }
+    {\usebibmacro{eprint}}%
+}
+
+\newcommand{\extlink}{\raisebox{0.1ex}{\tiny$\nearrow$}}
+
+
+\title{%
+From Answers to Hypotheses\\[0.5ex]
+\large\itshape{}
+Internal Consensus and Its Limits in Large Language Models
+}
+
+\author{
+Victor Lavrenko\\
+\texttt{victor@peacetech.vc}
+}
+
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Large language models (LLMs) now reach near-expert performance on medical QA and diagnostic benchmarks, yet this progress does not reliably translate into safe clinical decision support. We argue that a core limitation is not missing knowledge, but a failure to surface and reason over the \emph{distribution of internal hypotheses} expressed across alternative decoding trajectories. Using controlled multi-branch sampling on a medical QA benchmark, we show that (i) majority-vote self-consistency does not yield statistically significant accuracy gains over greedy decoding in our setting; (ii) the correct answer is often present among sampled hypotheses even when the final prediction is wrong; and (iii) strong internal consensus can still coincide with incorrect answers. We formalize these effects with statistical tests and characterize an alternative failure mode—\emph{errors of hypothesis space}—where models converge confidently on a systematically wrong explanation, motivating hypothesis-centric evaluation analogous to differential diagnosis.
+\end{abstract}
+
+\section{Introduction}
+
+Large language models (LLMs) have recently achieved impressive results on medical examinations and diagnostic benchmarks, in some cases rivaling or exceeding average physician performance on structured question answering and exam-style tasks. This progress has fueled optimism about near-term clinical deployment, with several systems now approaching conversational history-taking, differential diagnosis, and longitudinal reasoning. However, randomized studies and post-deployment analyses increasingly suggest that benchmark gains do not reliably translate into improved clinical decision-making and may introduce new risks when model outputs are treated as definitive answers.
+
+A dominant explanation for this gap attributes failures to hallucinations and overconfidence. While these phenomena are real, prior work paints a more nuanced picture of model uncertainty.\ \textcite{kadavath2022know} show that language models often \emph{know when they are likely to be wrong}, in the sense that internal signals correlate with error, but this knowledge is not reliably exposed through standard decoding. Similarly, \textcite{wang2022selfconsistency} demonstrate that sampling multiple reasoning traces and aggregating them via self-consistency can improve accuracy on some reasoning benchmarks, suggesting that alternative hypotheses already exist within the model’s latent reasoning process.
+
+Recent clinical and near-clinical evaluations further underscore the limits of treating improved benchmark accuracy as a proxy for dependable decision support. In a randomized controlled study, access to an LLM did not significantly improve physicians’ diagnostic reasoning compared to conventional resources \parencite{goh2024jama}, despite strong standalone model performance. At the same time, frontier systems such as AMIE illustrate rapid progress toward conversational diagnostic assistance and differential diagnosis \parencite{tu2025amie,mcduff2025naturemed}, amplifying the importance of understanding when internally coherent reasoning trajectories nonetheless converge on incorrect conclusions.
+
+Taken together, these findings suggest that uncertainty and alternative explanations are not absent from modern LLMs; rather, they are often \emph{latent}. The open question is whether these internal structures are sufficiently reliable, diverse, and accessible to support high-stakes decision-making. In medicine, uncertainty is rarely resolved by selecting a single most likely hypothesis; instead, clinicians reason over \emph{sets} of competing explanations, iteratively revising them as new evidence emerges. This work adopts that perspective and studies LLM reasoning as a \emph{distribution over hypotheses}, rather than as a single chain of thought or a single decoded answer.
+
+Operationally, we observe this distribution through repeated sampling of the same prompt under fixed conditions, yielding an empirical distribution over final answers and associated explanations. We do not assume access to internal symbolic representations or latent states; rather, by ``hypotheses'' we refer to the set of discrete answer-level explanations implicitly instantiated by independent decoding trajectories. This framing allows us to analyze internal agreement, diversity, and failure modes without introducing new architectures or training procedures.
+
+Finally, we emphasize that this work is diagnostic rather than prescriptive. We do not propose a new aggregation rule, verification strategy, or decoding algorithm. Instead, our goal is to characterize when and why aggregation and internal agreement fail, even under idealized sampling conditions, and to identify a distinct failure mode---\emph{errors of hypothesis space}---in which models converge confidently on a systematically wrong explanation. Understanding these failures is a necessary step toward evaluation paradigms that more closely resemble differential diagnosis in clinical practice.
+
+\section{Experimental Setup}
+
+For each question, we generate:
+\begin{itemize}
+  \item a greedy prediction using deterministic decoding; and
+  \item an ensemble of $N=10$ independently sampled reasoning paths.
+\end{itemize}
+
+Let $a_{i,j}$ denote the final answer of branch $j$ for question $i$. From the empirical distribution $P_i(a)$, we compute:
+\begin{itemize}
+  \item leader answer: $\arg\max_a P_i(a)$;
+  \item maximum agreement fraction:
+    \[
+      \text{max\_frac}_i = \max_a P_i(a);
+    \]
+  \item Top-$k$ coverage:
+    \[
+      \text{Top-}k = \mathbb{1}\{y_i \in \text{Top-}k(P_i)\}.
+    \]
+\end{itemize}
+
+All results are computed over 400 questions using a fixed prompt and model configuration.
+
+\section{Hypothesis H1: Aggregation Improves Accuracy}
+
+\textbf{H1.} Majority-vote aggregation improves accuracy relative to greedy decoding.
+
+Let $\hat{y}_i^{(g)}$ denote the greedy prediction and $\hat{y}_i^{(m)}$ the majority prediction. Accuracy is defined as:
+\[
+\text{Acc} = \frac{1}{N}\sum_i \mathbb{1}[\hat{y}_i = y_i].
+\]
+
+Empirically:
+\begin{itemize}
+  \item Greedy accuracy: 65.75\%
+  \item Majority accuracy: 66.75\%
+\end{itemize}
+
+A two-sided binomial test with null hypothesis $H_0: \pi = 0.6575$, where $\pi$ denotes the true success probability equal to the greedy decoding accuracy, yields a p-value of approximately $0.63$. We therefore fail to reject $H_0$, indicating that the observed difference between greedy and majority-vote accuracy is not statistically significant in this setting.
+
+\paragraph{Interpretation.}
+These results provide no statistical evidence in support of H1 in this experimental regime, suggesting that majority-vote aggregation does not reliably improve accuracy over greedy decoding under the tested conditions. While self-consistency can improve performance in some regimes \parencite{wang2022selfconsistency}, our results show that such gains are not robust in this setting. Aggregation alone is therefore insufficient as a general reliability mechanism.
+
+\section{Hypothesis H2: Correct Answers Appear Among Alternatives}
+
+\textbf{H2.} When the final prediction is incorrect, the correct answer is often present among alternative hypotheses.
+
+We measure Top-2 coverage:
+\[
+\text{Top-2 coverage} = \frac{1}{N}\sum_i \mathbb{1}\{y_i \in \text{Top-2}(P_i)\}.
+\]
+
+Observed Top-2 coverage is 80.5\%, compared to a greedy accuracy of 65.75\%, corresponding to an absolute improvement of 14.75 percentage points. Using a binomial model with null hypothesis $H_0:\ \pi = 0.6575$ (where $\pi$ is the baseline success probability equal to the greedy accuracy), this difference is highly statistically significant ($p$-value $\ll 10^{-6}$).
+
+\paragraph{Relation to prior work.}
+This result is consistent with \textcite{kadavath2022know}, who show that models frequently possess internal signals of uncertainty. Our findings extend this by demonstrating that uncertainty manifests as \emph{explicit alternative hypotheses}, not merely as reduced confidence.
+
+\section{Hypothesis H3: Internal Consensus Implies Correctness}
+
+\textbf{H3.} Strong internal agreement implies correctness.
+
+We analyze unanimous cases where $\text{max\_frac}_i = 1.0$. Out of 400 questions:
+\begin{itemize}
+  \item Unanimous cases: 151
+  \item Unanimous accuracy: 86.8\%
+\end{itemize}
+
+We test the null hypothesis $H_0: \pi \ge 0.95$, where $\pi$ denotes the true accuracy of unanimous predictions. A one-sided binomial test yields a p-value below $0.01$, allowing us to reject this hypothesis. Thus, even strong internal consensus does not guarantee near-perfect reliability.
+
+\paragraph{Key insight.}
+Internal consensus reflects \emph{coherence}, not truth. Models can converge confidently on incorrect explanations, producing a dangerous illusion of reliability.
+
+\section{Distributional Analysis of Consensus}
+
+Figure~\ref{fig:consensus} illustrates how accuracy varies with internal consensus. Accuracy increases monotonically with agreement but saturates well below perfect reliability. Notably, near-unanimous cases ($\text{max\_frac} \ge 0.9$) still exhibit error rates above 15\%.
+
+\begin{figure}[H]
+\centering
+\IfFileExists{figure1_max_frac_exact.png}{%
+  \includegraphics[width=0.45\textwidth]{figure1_max_frac_exact.png}%
+}{%
+  \fbox{\parbox[c][0.25\textheight][c]{0.45\textwidth}{\centering Missing figure: \texttt{figure1\_max\_frac\_exact.png}}}%
+}
+\captionsetup{width=0.6\textwidth}
+\caption{Accuracy as a function of internal consensus (max\_frac). Even near-unanimous cases exhibit non-zero error rates.}\label{fig:consensus}
+\end{figure}
+
+This behavior is inconsistent with the assumption that confidence or agreement can serve as a sufficient decision criterion.
+
+\section{An Alternative Explanation: Errors of Hypothesis Space}
+
+The failure to find evidence supporting H3 motivates an alternative explanation for these errors:
+
+\paragraph{H3$'$.\ }Some errors arise because the correct hypothesis is poorly represented or absent from the model's hypothesis space.
+
+Under this view, unanimous but incorrect predictions correspond to cases where the model's hypothesis space is locally coherent but globally misaligned with the task. Such errors are not reducible to stochastic selection noise and therefore cannot be remedied by increased sampling or voting alone.
+
+In such cases, increased sampling or stronger aggregation cannot recover the correct answer. This reframes aggregation as a \emph{diagnostic probe} rather than a solution.
+
+Taken together, our results suggest three qualitatively distinct failure modes in LLM reasoning:
+\begin{enumerate}
+  \item Selection errors, where the correct hypothesis is present among alternatives but not selected as the final answer.
+  \item Calibration or confidence errors, where internal agreement or confidence is misaligned with correctness.
+  \item Hypothesis space errors, where the model converges on an internally coherent but systematically incorrect explanation.
+\end{enumerate}
+
+Importantly, only the first class is addressable through improved selection or aggregation, while the latter two require changes to training objectives or hypothesis representation.
+
+\section{Relation to Prior Work}
+
+\begin{itemize}
+  \item \textbf{Self-consistency.} \textcite{wang2022selfconsistency} show that self-consistency can improve accuracy; we show its limits and failure modes in a medical QA setting.
+  \item \textbf{Internal uncertainty.} \textcite{kadavath2022know} demonstrate internal uncertainty awareness; we show how this uncertainty appears as alternative hypotheses at the answer level.
+  \item \textbf{Iterative refinement.} \textcite{madaan2023selfrefine} and STaR \parencite{zelikman2023star} focus on iterative correction and training; our work focuses on analysis rather than optimization.
+  \item \textbf{Selective prediction / abstention.} Related questions arise in selective prediction and abstention for medical QA \parencite{machcha2025abstention}, where the objective is to know when \emph{not} to answer.
+\end{itemize}
+
+\section{Implications and Future Work}
+
+These results suggest that safe deployment of LLMs in medicine requires decision rules that operate on \emph{sets of hypotheses}, not single answers. Future work should focus on:
+\begin{itemize}
+  \item explicit modeling of hypothesis spaces;
+  \item training objectives that penalize confident convergence on incorrect hypotheses; and
+  \item interfaces that expose structured uncertainty to clinicians.
+\end{itemize}
+
+\section*{Reproducibility and Code Availability}
+
+All experiments reported in this paper are fully reproducible.
+A public, versioned snapshot of the complete codebase is available at
+\url{https://github.com/victorlavrenko/rofa/tree/paper/from-answers-to-hypotheses-v1}.
+
+Reproduction is supported by two dedicated notebooks:
+
+\begin{itemize}
+  \item Reproduction notebook (analysis only):\
+  \href{https://github.com/victorlavrenko/rofa/blob/paper/from-answers-to-hypotheses-v1/notebooks/20_paper_reproduce.ipynb}{\texttt{20\_paper\_reproduce.ipynb}}
+  {\small[\href{https://colab.research.google.com/github/victorlavrenko/rofa/blob/paper/from-answers-to-hypotheses-v1/notebooks/20_paper_reproduce.ipynb}{Colab~\extlink}]}
+
+  \item Generation notebook (optional, stochastic):\
+  \href{https://github.com/victorlavrenko/rofa/blob/paper/from-answers-to-hypotheses-v1/notebooks/10_colab_generate.ipynb}{\texttt{10\_colab\_generate.ipynb}}
+  {\small[\href{https://colab.research.google.com/github/victorlavrenko/rofa/blob/paper/from-answers-to-hypotheses-v1/notebooks/10_colab_generate.ipynb}{Colab~\extlink}]}
+\end{itemize}
+
+\printbibliography[]
+
+\end{document}
